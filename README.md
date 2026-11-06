@@ -34,6 +34,16 @@ behave the way they do in Chrome.
 - Node.js ≥ 20 (tested on Node 26 / Electron 45)
 - macOS 12+, Windows 10+, or a modern Linux desktop
 
+## Prebuilt demo (macOS arm64)
+
+Grab the zip from [Releases](https://github.com/zccz14/electron-browser-shell/releases/tag/v0.1.0),
+unzip, and open `Browser Shell.app` — no Node.js needed. The build is ad-hoc signed
+(not notarised), so if a browser set the quarantine flag:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Browser Shell.app"
+```
+
 ## Run it
 
 ```bash
@@ -54,6 +64,13 @@ npm install
 ```
 
 (or put `electron_mirror=https://npmmirror.com/mirrors/electron/` in `~/.npmrc`)
+
+## Build a .app yourself
+
+```bash
+npm install
+./scripts/package-mac.sh      # -> dist/Browser Shell.app (ad-hoc signed)
+```
 
 ## Smoke test
 
