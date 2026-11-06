@@ -1,7 +1,7 @@
 'use strict'
 
 const path = require('node:path')
-const { WebContentsView, Menu, clipboard, shell } = require('electron')
+const { app, WebContentsView, Menu, clipboard, shell } = require('electron')
 const { normalizeInput } = require('./urls')
 
 const NEW_TAB_PAGE = path.join(__dirname, '..', 'renderer', 'newtab.html')
@@ -203,6 +203,8 @@ class TabManager {
       tab.title = wc.getTitle() || tab.title
     } catch (_) {}
 
+    const savedMB = tab.memoryMB
+
     this.detach(tab)
     try { wc.close() } catch (_) {}
     tab.view = null
@@ -211,6 +213,7 @@ class TabManager {
     tab.suspendedReason = reason
     tab.memoryMB = null
     this.stats.suspendedTotal += 1
+    console.log(`[sleep] released tab #${tab.id} (${tab.url}) reason=${reason} freed≈${savedMB || '?'}MB`)
     this.emit()
     return true
   }
@@ -234,6 +237,7 @@ class TabManager {
       this.window.contentView.addChildView(view)
     }
     view.setBounds(this.viewport)
+    console.log(`[sleep] woke tab #${tab.id} (${tab.url})`)
     this.emit()
     return true
   }
@@ -273,15 +277,25 @@ class TabManager {
   }
 
   async measure () {
+    // Electron exposes per-process numbers through app.getAppMetrics(); the
+    // old webContents.getProcessMemoryInfo() no longer exists. Join on the
+    // renderer's OS pid.
+    const byPid = new Map()
+    for (const metric of app.getAppMetrics()) {
+      const kb = metric.memory && metric.memory.workingSetSize
+      if (typeof kb === 'number' && metric.pid) byPid.set(metric.pid, Math.round(kb / 1024))
+    }
+
     const live = this.order
       .map((id) => this.tabs.get(id))
       .filter((tab) => tab && tab.view && !tab.suspended)
+
     let total = 0
     for (const tab of live) {
       try {
-        const info = await tab.view.webContents.getProcessMemoryInfo()
-        tab.memoryMB = Math.round((info.workingSetSize || 0) / 1024)
-        total += tab.memoryMB
+        const pid = tab.view.webContents.getOSProcessId()
+        tab.memoryMB = byPid.has(pid) ? byPid.get(pid) : null
+        if (tab.memoryMB) total += tab.memoryMB
       } catch (_) {
         tab.memoryMB = null
       }
@@ -296,6 +310,10 @@ class TabManager {
     const slept = []
     const now = Date.now()
 
+    // Measure first so the log, the tab menu and the pressure rule all work
+    // off real numbers rather than guesses.
+    let total = await this.measure()
+
     const candidates = this.order
       .map((id) => this.tabs.get(id))
       .filter((tab) => this.canSleep(tab))
@@ -303,11 +321,14 @@ class TabManager {
 
     for (const tab of candidates) {
       if (now - tab.lastActiveAt < this.policy.idleMs) continue
-      if (await this.sleep(tab.id, 'idle')) slept.push(tab.id)
+      const freed = tab.memoryMB || 0
+      if (await this.sleep(tab.id, 'idle')) {
+        slept.push(tab.id)
+        total -= freed
+      }
     }
 
     // memory pressure: release oldest background tabs until under the limit
-    let total = await this.measure()
     const remaining = this.order
       .map((id) => this.tabs.get(id))
       .filter((tab) => this.canSleep(tab))

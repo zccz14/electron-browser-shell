@@ -299,6 +299,9 @@ async function runSmoke ({ window, chromeView, tabs, extensions, openExtensionPo
 
     const savedIdle = tabs.policy.idleMs
     tabs.policy.idleMs = 0
+    await tabs.measure()
+    const memoryBefore = tabs.lastMemoryMB
+    const tabMemoryBefore = tabs.tabs.get(sleepTab).memoryMB
     const released = await tabs.sweep()
     const sleepRecord = tabs.tabs.get(sleepTab)
     if (!released.includes(sleepTab)) fails.push('idle background tab was not released')
@@ -309,6 +312,8 @@ async function runSmoke ({ window, chromeView, tabs, extensions, openExtensionPo
       released,
       suspendedTab: { id: sleepRecord.id, url: sleepRecord.url, scrollY: sleepRecord.scrollY, reason: sleepRecord.suspendedReason },
       totalSuspended: tabs.stats.suspendedTotal,
+      shellTabsMemoryBefore: memoryBefore,
+      releasedTabMemoryMB: tabMemoryBefore,
       chromeCapture: await capture(chromeView.webContents, path.join(outDir, '09-sleeping-tab.png'))
     })
 

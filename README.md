@@ -107,8 +107,10 @@ report.json         full state dumps + failures
 ## Tab sleep (the memory story)
 
 A tab is a full Chromium renderer. Detaching its view when you switch tabs keeps
-it instant, but it keeps the memory too — measured on this machine: **~275 MB for
-an idle shell, ~90 MB per light page**, and 250–400 MB per heavy web app.
+it instant, but it keeps the memory too. Measured on an M-series Mac with this
+build: **3 tabs = 790 MB and 6 renderer processes; after the two background tabs
+slept = 492 MB and 4 renderers — 298 MB returned.** Light pages cost ~90 MB each,
+heavy web apps 250–400 MB.
 
 So the shell sleeps tabs: the policy picks background tabs and **destroys their
 renderer**, keeping only `{url, title, favicon, scrollY}`. Waking rebuilds the
