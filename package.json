@@ -1,7 +1,7 @@
 {
   "name": "electron-browser-shell",
   "productName": "Browser Shell",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": false,
   "description": "A Chrome-like browser shell built with Electron: BaseWindow + WebContentsView tabs, omnibox, and a Chrome extension host (unpacked + .crx).",
   "main": "src/main/index.js",

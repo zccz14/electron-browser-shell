@@ -25,6 +25,22 @@ let tabs = null
 let sharedSession = null
 let extensionHost = null
 
+function argNum (name, fallback) {
+  const hit = process.argv.find((a) => a.startsWith(`--${name}=`))
+  if (!hit) return fallback
+  const value = Number(hit.slice(name.length + 3))
+  return Number.isFinite(value) ? value : fallback
+}
+
+// The sleep policy is the app's call by default; every tab gets a user-facing
+// "keep this tab awake" switch on top of it.
+const SLEEP_POLICY = {
+  enabled: !process.argv.includes('--no-sleep'),
+  idleMs: argNum('tab-suspend-after-ms', 15 * 60 * 1000),
+  tickMs: argNum('policy-tick-ms', 30 * 1000),
+  memoryLimitMB: argNum('memory-limit-mb', 1500)
+}
+
 // ------------------------------------------------------------------ session
 const sessionFile = () => path.join(app.getPath('userData'), 'session.json')
 
@@ -135,10 +151,14 @@ function createWindow () {
     window: mainWindow,
     session: sharedSession,
     topInset: CHROME_HEIGHT,
-    onState: pushState
+    onState: pushState,
+    policy: SLEEP_POLICY
   })
 
   const saved = loadSession()
+  if (saved && Array.isArray(saved.keepAliveOrigins)) {
+    tabs.keepAliveOrigins = new Set(saved.keepAliveOrigins)
+  }
   if (saved && saved.tabs.length) {
     for (const entry of saved.tabs) tabs.create({ url: entry.url, activate: false })
     const index = Number.isInteger(saved.activeIndex) ? saved.activeIndex : 0
@@ -159,6 +179,8 @@ function createWindow () {
     chromeView = null
     tabs = null
   })
+
+  tabs.startPolicy()
 
   chromeView.webContents.once('did-finish-load', () => {
     layout()
@@ -200,6 +222,31 @@ function registerIpc () {
   ipcMain.handle('shell:forward', () => tabs && tabs.forward())
   ipcMain.handle('shell:reload', () => tabs && tabs.reload())
   ipcMain.handle('shell:stop', () => tabs && tabs.stop())
+  ipcMain.handle('shell:set-keep-alive', (_e, id, on) => tabs && tabs.setKeepAlive(id, on))
+  ipcMain.handle('shell:sleep-tab', (_e, id) => tabs && tabs.sleep(id, 'manual'))
+  ipcMain.handle('shell:sweep', () => tabs && tabs.sweep())
+  ipcMain.handle('shell:tab-menu', (_e, id) => {
+    if (!tabs || !mainWindow) return
+    const tab = tabs.tabs.get(id)
+    if (!tab) return
+    Menu.buildFromTemplate([
+      {
+        label: tab.keepAlive ? 'Allow this tab to sleep' : 'Keep this tab awake',
+        type: 'checkbox',
+        checked: tab.keepAlive,
+        click: () => tabs.setKeepAlive(id, !tab.keepAlive)
+      },
+      {
+        label: 'Put this tab to sleep now',
+        enabled: !tab.suspended && tab.id !== tabs.activeId,
+        click: () => tabs.sleep(id, 'manual')
+      },
+      { type: 'separator' },
+      { label: tab.suspended ? `Sleeping since ${new Date(tab.suspendedAt).toLocaleTimeString()}` : (tab.memoryMB ? `Using ${tab.memoryMB} MB` : 'Using —'), enabled: false },
+      { type: 'separator' },
+      { label: 'Close tab', click: () => tabs.close(id) }
+    ]).popup()
+  })
   ipcMain.handle('ext:list', () => (extensionHost ? extensionHost.list() : []))
   ipcMain.handle('ext:open-popup', (_e, id) => {
     const popup = openExtensionPopup(id)
@@ -273,6 +320,8 @@ function registerIpc () {
       { label: 'Reload', accelerator: 'CmdOrCtrl+R', click: () => tabs && tabs.reload() },
       { label: 'Toggle DevTools', accelerator: isMac ? 'Alt+Cmd+I' : 'Ctrl+Shift+I', click: () => { const wc = tabs && tabs.activeWebContents(); if (wc) wc.toggleDevTools() } },
       { type: 'separator' },
+      { label: 'Sleep Background Tabs Now', accelerator: 'CmdOrCtrl+Shift+S', click: () => tabs && tabs.sweep({ force: true }) },
+      { type: 'separator' },
       { label: 'Extensions', accelerator: 'CmdOrCtrl+Shift+E', click: () => openExtensionsPage() },
       { type: 'separator' },
       isMac ? { role: 'about' } : { role: 'quit' }
@@ -292,6 +341,7 @@ function menuContext () {
     prevTab: () => tabs && tabs.cycle(-1),
     focusAddressBar: () => sendCommand('focus-address'),
     openExtensions: () => openExtensionsPage(),
+    sleepBackgroundTabs: () => tabs && tabs.sweep({ force: true }),
     toggleDevTools: () => {
       const wc = tabs && tabs.activeWebContents()
       if (wc) wc.toggleDevTools()

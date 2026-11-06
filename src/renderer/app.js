@@ -20,6 +20,12 @@ function activeTab () {
 function faviconNode (tab) {
   const span = document.createElement('span')
   span.className = 'tab-favicon'
+  if (tab.suspended) {
+    span.classList.add('sleeping-icon')
+    span.textContent = '\u263E'      // moon: this tab's renderer is released
+    span.title = 'Sleeping — memory released'
+    return span
+  }
   if (tab.favicon) {
     const img = document.createElement('img')
     img.src = tab.favicon
@@ -35,11 +41,29 @@ function faviconNode (tab) {
   return span
 }
 
+function pinNode () {
+  const span = document.createElement('span')
+  span.className = 'tab-pin'
+  span.title = 'Kept awake — this tab will not be released'
+  span.innerHTML = '<svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true">' +
+    '<path d="M6 2h4l-.7 3.3 2.2 2.2v1.2H8.7L8 14.2l-.7-5.5H4.5V7.5l2.2-2.2L6 2z" fill="currentColor"/></svg>'
+  return span
+}
+
 function renderTab (tab) {
   const el = document.createElement('div')
-  el.className = 'tab' + (tab.id === state.activeId ? ' active' : '') + (tab.loading ? ' loading' : '')
+  el.className = 'tab' +
+    (tab.id === state.activeId ? ' active' : '') +
+    (tab.loading ? ' loading' : '') +
+    (tab.suspended ? ' sleeping' : '') +
+    (tab.keepAlive ? ' pinned' : '')
   el.dataset.id = String(tab.id)
-  el.title = tab.title
+  const bits = [tab.title]
+  if (tab.url) bits.push(tab.url)
+  if (tab.suspended) bits.push('sleeping — memory released')
+  else if (tab.memoryMB) bits.push(tab.memoryMB + ' MB')
+  if (tab.keepAlive) bits.push('kept awake')
+  el.title = bits.join('\n')
 
   const title = document.createElement('span')
   title.className = 'tab-title'
@@ -55,9 +79,16 @@ function renderTab (tab) {
     window.shell.closeTab(tab.id)
   })
 
-  el.append(faviconNode(tab), title, close)
+  el.append(faviconNode(tab), title)
+  if (tab.keepAlive) el.appendChild(pinNode())
+  el.append(close)
 
   el.addEventListener('click', () => window.shell.activateTab(tab.id))
+  el.addEventListener('contextmenu', (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    window.shell.tabMenu(tab.id)
+  })
   el.addEventListener('auxclick', (e) => {
     if (e.button === 1) window.shell.closeTab(tab.id)     // middle click closes
   })

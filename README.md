@@ -30,6 +30,8 @@ behave the way they do in Chrome.
 | Extension content scripts, MV2 background pages, `chrome.storage`, runtime messaging, popups | ✅ |
 | Extension toolbar icons + popup window (`chrome-extension://…` in its own window) | ✅ |
 | Extensions manager page (`⌘/Ctrl+Shift+E`) with a per-permission capability report | ✅ |
+| Automatic tab sleep: releases background renderers, restores URL + scroll on wake | ✅ |
+| Per-tab "keep this tab awake" override, persisted per site | ✅ |
 | Frameless shell chrome: macOS traffic lights inset, Windows/Linux `titleBarOverlay` | ✅ |
 | Headless smoke test that drives the app and writes screenshots | ✅ |
 
@@ -96,10 +98,75 @@ Exit code `0` means every assertion passed. Artefacts land in the output dir:
 04-after-back.png   after back navigation
 05-omnibox.png      after typing in the omnibox
 06-resized.png      after window resize
-07-extensions.png   the extensions manager page
-08-popup.png        an extension popup rendered on chrome-extension://
+07-extensions.png    the extensions manager page
+08-popup.png         an extension popup rendered on chrome-extension://
+09-sleeping-tabs.png two sleeps tabs, moon icons in the tab strip
 report.json         full state dumps + failures
 ```
+
+## Tab sleep (the memory story)
+
+A tab is a full Chromium renderer. Detaching its view when you switch tabs keeps
+it instant, but it keeps the memory too — measured on this machine: **~275 MB for
+an idle shell, ~90 MB per light page**, and 250–400 MB per heavy web app.
+
+So the shell sleeps tabs: the policy picks background tabs and **destroys their
+renderer**, keeping only `{url, title, favicon, scrollY}`. Waking rebuilds the
+view, reloads the URL and puts the scroll position back — the same trade Chrome
+makes when it discards a tab.
+
+![Sleeping tabs](docs/screenshot-sleeping-tabs.png)
+
+**The app decides by default, you keep the veto.**
+
+- Idle rule — a background tab older than `--tab-suspend-after-ms` (default 15 min) may be released
+- Pressure rule — if the shell's tabs use more than `--memory-limit-mb` (default 1500), the
+  least-recently-used background tabs are released until it's back under
+- Never released — the active tab, tabs playing audio, internal pages, and any tab
+  you marked **Keep this tab awake** (right-click a tab, or `⌘⇧S` to sleep everything now)
+- The keep-awake switch is stored per **origin**, so the editor you're working in
+  stays awake across restarts
+
+```bash
+# try the policy quickly
+npx electron . --tab-suspend-after-ms=5000 --policy-tick-ms=2000
+```
+
+## Passkeys / WebAuthn
+
+Passkeys do not work in this shell on macOS, and **this is not a bug in the
+shell** — it is an Apple gate. The smoke test records the facts on every run:
+
+| Check | Result on macOS |
+| --- | --- |
+| `window.PublicKeyCredential` present | ✅ |
+| secure context | ✅ |
+| `navigator.credentials.create` present | ✅ |
+| `isUserVerifyingPlatformAuthenticatorAvailable()` | ❌ **false** |
+| `create()` with a CDP virtual authenticator | ✅ `ok` |
+
+So the WebAuthn plumbing is intact; what is missing is the **platform
+authenticator** (Touch ID / iCloud Keychain). Chromium only exposes it to apps
+that hold Apple's
+[`com.apple.developer.web-browser.public-key-credential`](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.web-browser.public-key-credential)
+entitlement — which requires the Account Holder role of an Apple Developer
+account, a review form, and meeting Apple's "this really is a browser" criteria.
+Electron cannot ship with it, so every Electron-based browser hits this wall.
+
+What this repo *does* fix:
+
+- **Bluetooth / camera / microphone usage strings** are now written into the
+  packaged `Info.plist` (`scripts/package-mac.sh`). Without them macOS refuses the
+  BLE transport that cross-device passkeys use — Chromium logs
+  *"Cannot use Bluetooth because the responsible app ... does not have Bluetooth
+  metadata in its Info.plist"* — and the app is killed the moment a site asks for
+  the camera.
+- **The diagnostic is permanent**: `webauthn` is a step in the smoke report, so if
+  Electron ever ships platform-authenticator support you will see the flag flip.
+
+Paths that remain open: external FIDO2 security keys (USB/NFC), and — if you only
+need passkeys for **your own** domain — the `associated-domains` + AASA route used
+by Electron apps that are not general-purpose browsers.
 
 ## Chrome extensions
 
@@ -204,16 +271,20 @@ repo's smoke test — PRs welcome.
 a compositor; `WebContentsView` positioning is done by Electron, so it is not
 tied to any toolkit-specific layout.
 
-## Known limits (v0.2)
+## Known limits (v0.3)
 
 - The shell UI is only 88px tall, so autocomplete dropdowns that would overlap
   the page are not implemented yet. The `⋯` button opens a native menu instead.
-- Tabs are not draggable for reordering; there is no tab suspension yet, so ten
-  tabs cost ten renderers' worth of memory (roughly 1.5–3 GB in practice).
+- Tabs are not draggable for reordering.
+- A sleeping tab loses form state and page state (only URL + scroll come back) —
+  mark tabs you are typing in as "keep awake", or the idle rule may release them.
+- Platform passkeys (Touch ID / iCloud Keychain) are unavailable on macOS; see above.
 - No bookmarks, no history page, no downloads UI, no per-site zoom.
 - Session restore keeps `http(s)` URLs only.
 - Extensions can't be installed from the Web Store in one click, and MV3
   service-worker backgrounds don't run.
+- No memory-pressure signal from the OS is consumed yet; the policy is timer +
+  own accounting.
 
 ## License
 

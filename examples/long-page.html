@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Long test page</title>
+  <style>
+    body { margin: 0; font: 16px/1.7 system-ui, -apple-system, sans-serif; background: #202124; color: #e8eaed; }
+    section { height: 900px; padding: 40px; border-bottom: 1px solid #3c3d42; box-sizing: border-box; }
+    h2 { margin: 0 0 12px; font-size: 20px; }
+    .marker { position: fixed; top: 8px; right: 12px; font: 600 12px system-ui; color: #8ab4f8; }
+  </style>
+</head>
+<body>
+  <div class="marker" id="marker">scrollY = 0</div>
+  <section><h2>Block 1</h2><p>Scroll down; this page is used by the smoke test to prove that a sleept tab restores its scroll position.</p></section>
+  <section><h2>Block 2</h2></section>
+  <section><h2>Block 3</h2></section>
+  <section><h2>Block 4</h2></section>
+  <section><h2>Block 5</h2></section>
+  <section><h2>Block 6</h2></section>
+  <script>
+    const marker = document.getElementById('marker')
+    setInterval(() => { marker.textContent = 'scrollY = ' + Math.round(window.scrollY) }, 200)
+  </script>
+</body>
+</html>

@@ -94,6 +94,21 @@ body.is-win .titlebar { padding-right: 148px; }
 }
 
 .tab-favicon img { width: 16px; height: 16px; object-fit: contain; }
+.tab-favicon.sleeping-icon {
+  background: transparent;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--text-dim);
+}
+.tab.sleeping { opacity: 0.6; }
+.tab.sleeping:hover, .tab.sleeping.active { opacity: 1; }
+.tab-pin {
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--focus);
+  opacity: 0.9;
+}
 .tab.loading .tab-favicon img { opacity: 0; }
 .tab.loading .tab-favicon::after {
   content: "";

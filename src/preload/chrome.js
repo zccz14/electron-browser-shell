@@ -15,6 +15,10 @@ contextBridge.exposeInMainWorld('shell', {
   reload: () => ipcRenderer.invoke('shell:reload'),
   stop: () => ipcRenderer.invoke('shell:stop'),
   showMenu: () => ipcRenderer.invoke('shell:show-menu'),
+  tabMenu: (id) => ipcRenderer.invoke('shell:tab-menu', id),
+  setKeepAlive: (id, on) => ipcRenderer.invoke('shell:set-keep-alive', id, on),
+  sleepTab: (id) => ipcRenderer.invoke('shell:sleep-tab', id),
+  sweepTabs: () => ipcRenderer.invoke('shell:sweep'),
   openExtensionPopup: (id) => ipcRenderer.invoke('ext:open-popup', id),
   onExtensions: (callback) => {
     const handler = (_event, list) => callback(list)

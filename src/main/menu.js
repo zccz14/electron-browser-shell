@@ -43,6 +43,8 @@ function buildMenu (ctx) {
       { label: 'Force Reload', accelerator: 'CmdOrCtrl+Shift+R', click: () => ctx.hardReload() },
       { label: 'Toggle DevTools', accelerator: isMac ? 'Alt+Cmd+I' : 'Ctrl+Shift+I', click: () => ctx.toggleDevTools() },
       { type: 'separator' },
+      { label: 'Sleep Background Tabs Now', accelerator: 'CmdOrCtrl+Shift+S', click: () => ctx.sleepBackgroundTabs() },
+      { type: 'separator' },
       { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' },
       { type: 'separator' },
       { role: 'togglefullscreen' }

@@ -5,47 +5,52 @@ const { WebContentsView, Menu, clipboard, shell } = require('electron')
 const { normalizeInput } = require('./urls')
 
 const NEW_TAB_PAGE = path.join(__dirname, '..', 'renderer', 'newtab.html')
-const NEW_TAB_URL_PREFIX = 'file://'
+const FILE_PREFIX = 'file://'
 
 let nextId = 1
 
 /**
  * One WebContentsView per tab — the same model a real browser uses.
- * Inactive tabs stay alive (like Chrome); switching tabs just re-attaches the
- * view to the window instead of reloading the page.
+ *
+ * Inactive tabs stay alive (like Chrome) until the sleep policy decides to
+ * release them: a sleeping tab keeps only its metadata, its renderer process
+ * is destroyed and rebuilt on wake. That is exactly what Chrome calls
+ * "tab discard", and it is the only way to actually give memory back, since
+ * Electron exposes no freeze API.
  */
 class TabManager {
-  constructor ({ window, session, topInset = 88, onState }) {
+  constructor ({ window, session, topInset = 88, onState, policy = {} }) {
     this.window = window
     this.sharedSession = session
     this.topInset = topInset
     this.onState = onState
 
-    this.tabs = new Map()   // id -> tab record
-    this.order = []         // tab order, left to right
+    this.tabs = new Map()
+    this.order = []
     this.activeId = null
     this.viewport = { x: 0, y: topInset, width: 0, height: 0 }
     this.destroying = false
+
+    // --- sleep policy -----------------------------------------------------
+    this.policy = {
+      idleMs: policy.idleMs ?? 15 * 60 * 1000,      // background tab age before it may be released
+      tickMs: policy.tickMs ?? 30 * 1000,
+      memoryLimitMB: policy.memoryLimitMB ?? 1500,  // pressure threshold: release LRU tabs above this
+      enabled: policy.enabled !== false
+    }
+    this.keepAliveOrigins = new Set()
+    this.lastMemoryMB = null
+    this.sleepTimer = null
+    this.stats = { suspendedTotal: 0, lastSweepAt: null }
   }
 
   // ---------------------------------------------------------------- lifecycle
   create ({ url = null, activate = true, preload = null } = {}) {
     const id = nextId++
-    const view = new WebContentsView({
-      webPreferences: {
-        session: this.sharedSession,
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-        spellcheck: true,
-        ...(preload ? { preload } : {})
-      }
-    })
-    view.setBackgroundColor('#202124')
-
     const tab = {
       id,
-      view,
+      view: null,
+      preload,
       title: '',
       url: '',
       favicon: null,
@@ -54,19 +59,46 @@ class TabManager {
       canGoForward: false,
       isNewTab: !url,
       isInternal: !url,
-      error: null
+      error: null,
+      keepAlive: false,
+      suspended: false,
+      suspendedAt: null,
+      suspendedReason: null,
+      lastActiveAt: Date.now(),
+      scrollY: 0,
+      memoryMB: null
     }
 
     this.tabs.set(id, tab)
     this.order.push(id)
-    this.wire(tab)
 
-    if (url) view.webContents.loadURL(url)
-    else view.webContents.loadFile(NEW_TAB_PAGE)
+    this.attachView(tab)
+    if (url) tab.view.webContents.loadURL(url)
+    else tab.view.webContents.loadFile(NEW_TAB_PAGE)
 
     if (activate) this.activate(id)
     this.emit()
     return id
+  }
+
+  /** Build (or rebuild, after a sleep) the WebContentsView for a tab. */
+  attachView (tab) {
+    const view = new WebContentsView({
+      webPreferences: {
+        session: this.sharedSession,
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        spellcheck: true,
+        ...(tab.preload ? { preload: tab.preload } : {})
+      }
+    })
+    view.setBackgroundColor('#202124')
+    tab.view = view
+    tab.suspended = false
+    tab.suspendedReason = null
+    this.wire(tab)
+    return view
   }
 
   close (id) {
@@ -77,15 +109,18 @@ class TabManager {
     this.order.splice(index, 1)
     this.tabs.delete(id)
 
-    try { this.window.contentView.removeChildView(tab.view) } catch (_) {}
-    try { tab.view.webContents.close() } catch (_) {}
+    this.detach(tab)
+    if (tab.view) {
+      try { tab.view.webContents.close() } catch (_) {}
+      tab.view = null
+    }
 
     if (this.activeId === id) {
       this.activeId = null
       if (this.destroying) return this.emit()
       const next = this.order[index] || this.order[index - 1] || this.order[0]
       if (next != null) this.activate(next)
-      else this.create({})            // a browser always has at least one tab
+      else this.create({})
     }
     this.emit()
   }
@@ -94,21 +129,32 @@ class TabManager {
     if (this.activeId != null) this.close(this.activeId)
   }
 
+  detach (tab) {
+    if (!tab.view) return
+    try { this.window.contentView.removeChildView(tab.view) } catch (_) {}
+  }
+
   activate (id) {
     const tab = this.tabs.get(id)
     if (!tab || this.destroying) return
 
+    if (tab.suspended) this.wake(id)
+
     const prev = this.activeId != null ? this.tabs.get(this.activeId) : null
     if (prev && prev.id !== id) {
-      try { this.window.contentView.removeChildView(prev.view) } catch (_) {}
+      this.detach(prev)
+      prev.lastActiveAt = Date.now()
     }
 
     this.activeId = id
-    if (!this.window.contentView.children.includes(tab.view)) {
+    tab.lastActiveAt = Date.now()
+    if (tab.view && !this.window.contentView.children.includes(tab.view)) {
       this.window.contentView.addChildView(tab.view)
     }
-    tab.view.setBounds(this.viewport)
-    tab.view.webContents.focus()
+    if (tab.view) {
+      tab.view.setBounds(this.viewport)
+      tab.view.webContents.focus()
+    }
     this.emit()
   }
 
@@ -122,18 +168,168 @@ class TabManager {
   layout ({ width, height }) {
     this.viewport = { x: 0, y: this.topInset, width, height: Math.max(0, height) }
     const tab = this.activeId != null ? this.tabs.get(this.activeId) : null
-    if (tab) tab.view.setBounds(this.viewport)
+    if (tab && tab.view) tab.view.setBounds(this.viewport)
   }
 
   destroyAll () {
     this.destroying = true
+    this.stopPolicy()
     for (const id of [...this.order]) this.close(id)
+  }
+
+  // ------------------------------------------------------------------ sleeping
+  canSleep (tab) {
+    if (!tab || tab.suspended) return false
+    if (tab.id === this.activeId) return false
+    if (tab.keepAlive) return false
+    if (tab.isInternal || tab.isNewTab) return false
+    if (!tab.url) return false
+    try {
+      if (tab.view && tab.view.webContents.isCurrentlyAudible()) return false
+    } catch (_) {}
+    return true
+  }
+
+  async sleep (id, reason = 'idle') {
+    const tab = this.tabs.get(id)
+    if (!tab || !this.canSleep(tab)) return false
+
+    const wc = tab.view.webContents
+    try {
+      tab.scrollY = await wc.executeJavaScript('window.scrollY', true)
+    } catch (_) { tab.scrollY = 0 }
+    try {
+      tab.url = wc.getURL() || tab.url
+      tab.title = wc.getTitle() || tab.title
+    } catch (_) {}
+
+    this.detach(tab)
+    try { wc.close() } catch (_) {}
+    tab.view = null
+    tab.suspended = true
+    tab.suspendedAt = Date.now()
+    tab.suspendedReason = reason
+    tab.memoryMB = null
+    this.stats.suspendedTotal += 1
+    this.emit()
+    return true
+  }
+
+  async wake (id) {
+    const tab = this.tabs.get(id)
+    if (!tab || !tab.suspended) return false
+
+    this.attachView(tab)
+    const view = tab.view
+    const restore = () => {
+      if (tab.scrollY) {
+        view.webContents.executeJavaScript(`window.scrollTo(0, ${Math.round(tab.scrollY)})`).catch(() => {})
+      }
+    }
+    view.webContents.once('did-finish-load', restore)
+    if (tab.url) view.webContents.loadURL(tab.url).catch(() => {})
+    else view.webContents.loadFile(NEW_TAB_PAGE)
+
+    if (this.window.contentView && !this.window.contentView.children.includes(view)) {
+      this.window.contentView.addChildView(view)
+    }
+    view.setBounds(this.viewport)
+    this.emit()
+    return true
+  }
+
+  setKeepAlive (id, keepAlive) {
+    const tab = this.tabs.get(id)
+    if (!tab) return
+    tab.keepAlive = Boolean(keepAlive)
+    try {
+      const origin = tab.url ? new URL(tab.url).origin : null
+      if (origin) {
+        if (tab.keepAlive) this.keepAliveOrigins.add(origin)
+        else this.keepAliveOrigins.delete(origin)
+      }
+    } catch (_) {}
+    this.emit()
+  }
+
+  keepAliveFor (url) {
+    try {
+      return this.keepAliveOrigins.has(new URL(url).origin)
+    } catch (_) {
+      return false
+    }
+  }
+
+  // -------------------------------------------------------------- sleep policy
+  startPolicy () {
+    if (!this.policy.enabled || this.sleepTimer) return
+    this.sleepTimer = setInterval(() => { this.sweep().catch(() => {}) }, this.policy.tickMs)
+    if (this.sleepTimer.unref) this.sleepTimer.unref()
+  }
+
+  stopPolicy () {
+    if (this.sleepTimer) clearInterval(this.sleepTimer)
+    this.sleepTimer = null
+  }
+
+  async measure () {
+    const live = this.order
+      .map((id) => this.tabs.get(id))
+      .filter((tab) => tab && tab.view && !tab.suspended)
+    let total = 0
+    for (const tab of live) {
+      try {
+        const info = await tab.view.webContents.getProcessMemoryInfo()
+        tab.memoryMB = Math.round((info.workingSetSize || 0) / 1024)
+        total += tab.memoryMB
+      } catch (_) {
+        tab.memoryMB = null
+      }
+    }
+    this.lastMemoryMB = total
+    return total
+  }
+
+  /** One policy pass: idle tabs first, then LRU eviction under memory pressure. */
+  async sweep ({ force = false } = {}) {
+    if (!this.policy.enabled && !force) return []
+    const slept = []
+    const now = Date.now()
+
+    const candidates = this.order
+      .map((id) => this.tabs.get(id))
+      .filter((tab) => this.canSleep(tab))
+      .sort((a, b) => a.lastActiveAt - b.lastActiveAt)
+
+    for (const tab of candidates) {
+      if (now - tab.lastActiveAt < this.policy.idleMs) continue
+      if (await this.sleep(tab.id, 'idle')) slept.push(tab.id)
+    }
+
+    // memory pressure: release oldest background tabs until under the limit
+    let total = await this.measure()
+    const remaining = this.order
+      .map((id) => this.tabs.get(id))
+      .filter((tab) => this.canSleep(tab))
+      .sort((a, b) => a.lastActiveAt - b.lastActiveAt)
+    for (const tab of remaining) {
+      if (total <= this.policy.memoryLimitMB) break
+      const freed = tab.memoryMB || 0
+      if (await this.sleep(tab.id, 'pressure')) {
+        slept.push(tab.id)
+        total -= freed
+      }
+    }
+
+    this.stats.lastSweepAt = Date.now()
+    if (slept.length) this.emit()
+    return slept
   }
 
   // ------------------------------------------------------------------ actions
   activeWebContents () {
     const tab = this.activeId != null ? this.tabs.get(this.activeId) : null
-    return tab ? tab.view.webContents : null
+    return tab && tab.view ? tab.view.webContents : null
   }
 
   navigate (input, id = this.activeId) {
@@ -141,6 +337,8 @@ class TabManager {
     if (!tab) return
     const url = normalizeInput(input)
     if (!url) return
+    if (tab.suspended) this.wake(id)
+    if (!tab.view) return
     tab.error = null
     tab.isNewTab = false
     tab.view.webContents.loadURL(url).catch((err) => {
@@ -168,24 +366,30 @@ class TabManager {
   }
 
   sync (tab) {
+    if (!tab.view) return
     const wc = tab.view.webContents
     try {
       const current = wc.getURL()
-      const isLocalPage = Boolean(current) && current.startsWith(NEW_TAB_URL_PREFIX) && current.includes('/renderer/')
+      const isLocalPage = Boolean(current) && current.startsWith(FILE_PREFIX) && current.includes('/renderer/')
       tab.isNewTab = !current || (isLocalPage && current.includes('newtab.html'))
       tab.isInternal = isLocalPage
       tab.url = isLocalPage ? '' : current
       tab.canGoBack = wc.navigationHistory.canGoBack()
       tab.canGoForward = wc.navigationHistory.canGoForward()
+      if (!tab.keepAlive && tab.url && this.keepAliveFor(tab.url)) tab.keepAlive = true
     } catch (_) { /* view already gone */ }
   }
 
   serialize () {
     return {
       activeId: this.activeId,
+      memoryMB: this.lastMemoryMB,
+      stats: this.stats,
       tabs: this.order.map((id) => {
         const t = this.tabs.get(id)
-        const title = t.isNewTab ? 'New Tab' : (t.title || t.url || 'New Tab')
+        const title = t.suspended
+          ? (t.title || t.url || 'Sleeping tab')
+          : (t.isNewTab ? 'New Tab' : (t.title || t.url || 'New Tab'))
         return {
           id: t.id,
           title,
@@ -194,7 +398,11 @@ class TabManager {
           loading: t.loading,
           canGoBack: t.canGoBack,
           canGoForward: t.canGoForward,
-          hasError: Boolean(t.error)
+          hasError: Boolean(t.error),
+          suspended: t.suspended,
+          keepAlive: t.keepAlive,
+          memoryMB: t.memoryMB,
+          idleMs: Date.now() - t.lastActiveAt
         }
       })
     }
@@ -206,7 +414,8 @@ class TabManager {
         .map((id) => this.tabs.get(id))
         .filter((t) => t && t.url && /^https?:/i.test(t.url))
         .map((t) => ({ url: t.url })),
-      activeIndex: this.order.indexOf(this.activeId)
+      activeIndex: this.order.indexOf(this.activeId),
+      keepAliveOrigins: [...this.keepAliveOrigins]
     }
   }
 
@@ -237,9 +446,6 @@ class TabManager {
     })
     wc.on('context-menu', (_e, params) => this.showContextMenu(tab, params))
 
-    // target=_blank / window.open: real browser behaviour.
-    // Tabs stay in the shell, popup windows (OAuth, payments) get a native
-    // window that shares the same session — so cookies and window.opener work.
     wc.setWindowOpenHandler(({ url, disposition }) => {
       if (/^(mailto|tel):/i.test(url)) {
         shell.openExternal(url)

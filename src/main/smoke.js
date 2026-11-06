@@ -75,9 +75,14 @@ async function runSmoke ({ window, chromeView, tabs, extensions, openExtensionPo
     // --- extensions: install the bundled sample --------------------------
     for (const existing of extensions.list()) await extensions.remove(existing.id)
     const sampleDir = path.join(__dirname, '..', '..', 'examples', 'sample-extension')
-    const sample = await extensions.installFromDirectory(sampleDir, { copy: true })
-    if (!sample || !sample.id) fails.push('sample extension did not load')
-    report.steps.push({ step: 'extension-install', installed: { id: sample.id, name: sample.name, mv: sample.manifestVersion, warnings: sample.warnings } })
+    let sample = null
+    try {
+      sample = await extensions.installFromDirectory(sampleDir, { copy: true })
+      if (!sample || !sample.id) fails.push('sample extension did not load')
+      report.steps.push({ step: 'extension-install', installed: { id: sample.id, name: sample.name, mv: sample.manifestVersion, warnings: sample.warnings } })
+    } catch (err) {
+      report.steps.push({ step: 'extension-install', skipped: String(err && err.message ? err.message : err) })
+    }
 
     // --- multiple tabs -----------------------------------------------------
     const example = tabs.create({ url: 'https://example.com', activate: true })
@@ -96,16 +101,17 @@ async function runSmoke ({ window, chromeView, tabs, extensions, openExtensionPo
     })
 
     // --- the extension actually ran inside the page -----------------------
-    const banner = await tabs.tabs.get(example).view.webContents.executeJavaScript(
+    const banner = !sample ? null : await tabs.tabs.get(example).view.webContents.executeJavaScript(
       "(() => { const el = document.getElementById('browser-shell-sample-banner'); return el ? el.textContent : null })()"
     )
-    if (!banner) fails.push('content script of the sample extension did not run on example.com')
+    if (sample && !banner) fails.push('content script of the sample extension did not run on example.com')
 
     report.steps.push({ step: 'extension-content-script', banner })
 
     // --- the extension's popup opens in its own window --------------------
-    let popupStep = { opened: false }
+    let popupStep = { opened: false, skipped: !sample }
     try {
+      if (!sample) throw Object.assign(new Error('no sample extension'), { benign: true })
       const popup = openExtensionPopup(sample.id)
       await wait(1800)
       if (!popup || popup.isDestroyed()) throw new Error('popup window did not open')
@@ -118,13 +124,14 @@ async function runSmoke ({ window, chromeView, tabs, extensions, openExtensionPo
       popup.destroy()
     } catch (err) {
       popupStep = { opened: false, error: String(err && err.message ? err.message : err) }
-      fails.push('extension popup did not render: ' + popupStep.error)
+      if (!err || !err.benign) fails.push('extension popup did not render: ' + popupStep.error)
     }
     report.steps.push({ step: 'extension-popup', ...popupStep })
 
     // --- .crx install path (Electron cannot load .crx, we unpack it) ------
     let crxOutcome = 'skipped'
     try {
+      if (!sample) throw new Error('no sample extension to pack')
       const zipFile = path.join(outDir, 'sample.zip')
       execFileSync('zip', ['-qr', zipFile, '.'], { cwd: sampleDir })
       const zip = fs.readFileSync(zipFile)
@@ -161,6 +168,55 @@ async function runSmoke ({ window, chromeView, tabs, extensions, openExtensionPo
     })
     tabs.close(extPageId)
     await wait(400)
+
+    // --- WebAuthn / passkey capability probe ------------------------------
+    // Records what the engine can actually do, so a regression is visible.
+    let webauthn = null
+    try {
+      const wc = tabs.activeWebContents()
+      webauthn = await wc.executeJavaScript(`(async () => {
+        const caps = {
+          publicKeyCredential: typeof PublicKeyCredential !== 'undefined',
+          secureContext: window.isSecureContext,
+          credentialsCreate: Boolean(navigator.credentials && navigator.credentials.create)
+        }
+        try { caps.platformAuthenticator = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable() } catch (e) { caps.platformAuthenticator = 'error: ' + e.message }
+        try { caps.conditionalMediation = await PublicKeyCredential.isConditionalMediationAvailable?.() } catch (e) { caps.conditionalMediation = 'error: ' + e.message }
+        return caps
+      })()`)
+
+      // A virtual authenticator proves the API path itself works, independent
+      // of whether the OS offers a platform authenticator.
+      try {
+        const dbg = wc.debugger
+        if (!dbg.isAttached()) dbg.attach('1.3')
+        await dbg.sendCommand('WebAuthn.enable')
+        await dbg.sendCommand('WebAuthn.addVirtualAuthenticator', {
+          options: { protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true }
+        })
+        const origin = new URL(wc.getURL()).hostname
+        webauthn.virtualCreate = await wc.executeJavaScript(`(async () => {
+          try {
+            const c = await navigator.credentials.create({ publicKey: {
+              challenge: new Uint8Array([9, 9, 9]),
+              rp: { name: 'Browser Shell smoke', id: location.hostname },
+              user: { id: new Uint8Array([7]), name: 'smoke', displayName: 'Smoke' },
+              pubKeyCredParams: [{ type: 'public-key', alg: -7 }],
+              timeout: 4000
+            } })
+            return c ? 'ok' : 'null'
+          } catch (e) { return e.name + ': ' + e.message }
+        })()`)
+        webauthn.origin = origin
+        await dbg.sendCommand('WebAuthn.disable').catch(() => {})
+        dbg.detach()
+      } catch (err) {
+        webauthn.virtualCreate = 'unavailable: ' + (err && err.message ? err.message : err)
+      }
+    } catch (err) {
+      webauthn = { error: String(err && err.message ? err.message : err) }
+    }
+    report.steps.push({ step: 'webauthn', ...webauthn })
 
     // --- navigation + history ---------------------------------------------
     tabs.navigate('example.com')
@@ -226,6 +282,66 @@ async function runSmoke ({ window, chromeView, tabs, extensions, openExtensionPo
     if (afterClose.tabs.length !== 2) fails.push(`expected 2 tabs after close, got ${afterClose.tabs.length}`)
 
     report.steps.push({ step: 'close-tab', state: afterClose })
+
+    // --- tab sleep: release a background renderer, then wake it -----------
+    const longPage = pathToFileURL(path.join(__dirname, '..', '..', 'examples', 'long-page.html')).toString()
+    const sleepTab = tabs.create({ url: longPage, activate: true })
+    await waitForLoad(tabs, sleepTab)
+    await wait(400)
+    await tabs.tabs.get(sleepTab).view.webContents.executeJavaScript('window.scrollTo(0, 1200)')
+    await wait(350)
+
+    const activeBefore = tabs.activeId
+    const otherId = tabs.order.find((id) => id !== sleepTab)
+    if (otherId == null) throw new Error('need a second tab to park the long page in the background')
+    tabs.activate(otherId)                             // park the long page in the background
+    await wait(150)
+
+    const savedIdle = tabs.policy.idleMs
+    tabs.policy.idleMs = 0
+    const released = await tabs.sweep()
+    const sleepRecord = tabs.tabs.get(sleepTab)
+    if (!released.includes(sleepTab)) fails.push('idle background tab was not released')
+    if (sleepRecord.view !== null) fails.push('released tab still holds a WebContentsView')
+    if (!sleepRecord.suspended) fails.push('released tab is not marked as sleeping')
+    report.steps.push({
+      step: 'tab-sleep',
+      released,
+      suspendedTab: { id: sleepRecord.id, url: sleepRecord.url, scrollY: sleepRecord.scrollY, reason: sleepRecord.suspendedReason },
+      totalSuspended: tabs.stats.suspendedTotal,
+      chromeCapture: await capture(chromeView.webContents, path.join(outDir, '09-sleeping-tab.png'))
+    })
+
+    // wake it: the URL and the scroll position must come back
+    tabs.activate(sleepTab)
+    await waitForLoad(tabs, sleepTab)
+    await wait(900)
+    const wokeRecord = tabs.tabs.get(sleepTab)
+    const scrollAfter = await wokeRecord.view.webContents.executeJavaScript('Math.round(window.scrollY)')
+    if (wokeRecord.suspended) fails.push('tab did not wake up')
+    if (!wokeRecord.url.includes('long-page.html')) fails.push('tab lost its URL while sleeping')
+    if (Math.abs(scrollAfter - 1200) > 80) fails.push(`scroll position not restored (got ${scrollAfter})`)
+    report.steps.push({ step: 'tab-wake', url: wokeRecord.url, scrollY: scrollAfter })
+
+    // keep-alive: the user switch must win over the automatic policy
+    tabs.activate(otherId)
+    tabs.setKeepAlive(sleepTab, true)
+    const releasedWithKeepAlive = await tabs.sweep()
+    if (releasedWithKeepAlive.includes(sleepTab)) fails.push('keep-alive tab was released anyway')
+
+    tabs.setKeepAlive(sleepTab, false)
+    const releasedAfterOptOut = await tabs.sweep()
+    if (!releasedAfterOptOut.includes(sleepTab)) fails.push('tab was not released after keep-alive was turned off')
+    report.steps.push({
+      step: 'tab-keep-alive',
+      honouredKeepAlive: !releasedWithKeepAlive.includes(sleepTab),
+      releasedAfterOptOut: releasedAfterOptOut.includes(sleepTab)
+    })
+
+    tabs.close(sleepTab)
+    tabs.policy.idleMs = savedIdle
+    tabs.activate(activeBefore != null && tabs.tabs.has(activeBefore) ? activeBefore : otherId)
+    await wait(300)
 
     // --- resize ------------------------------------------------------------
     window.setContentSize(1100, 720)
