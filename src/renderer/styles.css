@@ -166,6 +166,10 @@ body.is-win .titlebar { padding-right: 148px; }
 #reload.loading .ico-reload { display: none; }
 #reload.loading .ico-stop { display: block; }
 
+.ext-actions { display: flex; align-items: center; gap: 2px; }
+.ext-btn { width: 28px; height: 28px; }
+.ext-btn img { width: 16px; height: 16px; object-fit: contain; }
+
 /* -------------------------------------------------------------- omnibox */
 .omnibox {
   display: flex;

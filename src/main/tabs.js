@@ -29,7 +29,7 @@ class TabManager {
   }
 
   // ---------------------------------------------------------------- lifecycle
-  create ({ url = null, activate = true } = {}) {
+  create ({ url = null, activate = true, preload = null } = {}) {
     const id = nextId++
     const view = new WebContentsView({
       webPreferences: {
@@ -37,7 +37,8 @@ class TabManager {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
-        spellcheck: true
+        spellcheck: true,
+        ...(preload ? { preload } : {})
       }
     })
     view.setBackgroundColor('#202124')
@@ -52,6 +53,7 @@ class TabManager {
       canGoBack: false,
       canGoForward: false,
       isNewTab: !url,
+      isInternal: !url,
       error: null
     }
 
@@ -169,8 +171,10 @@ class TabManager {
     const wc = tab.view.webContents
     try {
       const current = wc.getURL()
-      tab.isNewTab = !current || (current.startsWith(NEW_TAB_URL_PREFIX) && current.includes('newtab.html'))
-      tab.url = tab.isNewTab ? '' : current
+      const isLocalPage = Boolean(current) && current.startsWith(NEW_TAB_URL_PREFIX) && current.includes('/renderer/')
+      tab.isNewTab = !current || (isLocalPage && current.includes('newtab.html'))
+      tab.isInternal = isLocalPage
+      tab.url = isLocalPage ? '' : current
       tab.canGoBack = wc.navigationHistory.canGoBack()
       tab.canGoForward = wc.navigationHistory.canGoForward()
     } catch (_) { /* view already gone */ }

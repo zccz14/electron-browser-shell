@@ -2,11 +2,17 @@
 
 const path = require('node:path')
 const fs = require('node:fs')
-const { app, BaseWindow, WebContentsView, ipcMain, Menu, session, shell } = require('electron')
+const { app, BaseWindow, WebContentsView, BrowserWindow, ipcMain, Menu, session, shell, dialog } = require('electron')
 
 const { TabManager } = require('./tabs')
 const { buildMenu } = require('./menu')
 const { runSmoke } = require('./smoke')
+const { ExtensionHost } = require('./extensions')
+
+// Smoke runs must not touch the real profile (extensions, session, storage).
+if (process.argv.includes('--smoke')) {
+  app.setPath('userData', path.join(require('node:os').tmpdir(), 'browser-shell-smoke-profile'))
+}
 
 // Height of the shell's own chrome (tab strip + toolbar). The web content
 // views start right below it.
@@ -17,6 +23,7 @@ let mainWindow = null
 let chromeView = null
 let tabs = null
 let sharedSession = null
+let extensionHost = null
 
 // ------------------------------------------------------------------ session
 const sessionFile = () => path.join(app.getPath('userData'), 'session.json')
@@ -50,6 +57,43 @@ function sendCommand (name, payload) {
   if (!chromeView || chromeView.webContents.isDestroyed()) return
   if (name === 'focus-address') chromeView.webContents.focus()
   chromeView.webContents.send('shell:command', name, payload)
+}
+
+function broadcastExtensions () {
+  if (!extensionHost || !chromeView || chromeView.webContents.isDestroyed()) return
+  chromeView.webContents.send('shell:extensions', extensionHost.list())
+}
+
+function openExtensionPopup (id) {
+  if (!extensionHost) return null
+  const url = extensionHost.popupUrl(id)
+  if (!url) return null
+  const popup = new BrowserWindow({
+    width: 380,
+    height: 440,
+    parent: mainWindow || undefined,
+    autoHideMenuBar: true,
+    resizable: true,
+    title: 'Extension',
+    backgroundColor: '#202124',
+    webPreferences: {
+      session: sharedSession,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
+    }
+  })
+  popup.loadURL(url)
+  return popup
+}
+
+function openExtensionsPage () {
+  if (!tabs) return
+  tabs.create({
+    url: require('node:url').pathToFileURL(path.join(__dirname, '..', 'renderer', 'extensions.html')).toString(),
+    preload: path.join(__dirname, '..', 'preload', 'extensions.js'),
+    activate: true
+  })
 }
 
 function layout () {
@@ -120,12 +164,14 @@ function createWindow () {
     layout()
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show()
 
+    broadcastExtensions()
+
     if (process.argv.includes('--smoke')) {
       const timer = setTimeout(() => {
         console.error('SMOKE_RESULT ' + JSON.stringify({ ok: false, failures: ['timeout'] }))
         app.exit(1)
       }, 90000)
-      runSmoke({ window: mainWindow, chromeView, tabs })
+      runSmoke({ window: mainWindow, chromeView, tabs, extensions: extensionHost, openExtensionPopup, broadcastExtensions })
         .then((code) => { clearTimeout(timer); app.exit(code) })
         .catch((err) => {
           clearTimeout(timer)
@@ -154,6 +200,70 @@ function registerIpc () {
   ipcMain.handle('shell:forward', () => tabs && tabs.forward())
   ipcMain.handle('shell:reload', () => tabs && tabs.reload())
   ipcMain.handle('shell:stop', () => tabs && tabs.stop())
+  ipcMain.handle('ext:list', () => (extensionHost ? extensionHost.list() : []))
+  ipcMain.handle('ext:open-popup', (_e, id) => {
+    const popup = openExtensionPopup(id)
+    return Boolean(popup)
+  })
+  ipcMain.handle('ext:install-unpacked', async () => {
+    if (!extensionHost || !mainWindow) return { canceled: true }
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Load unpacked extension',
+      properties: ['openDirectory'],
+      message: 'Pick a folder that contains manifest.json'
+    })
+    if (result.canceled || !result.filePaths.length) return { canceled: true }
+    try {
+      const ext = await extensionHost.installFromDirectory(result.filePaths[0], { copy: true })
+      broadcastExtensions()
+      return { extension: ext, list: extensionHost.list() }
+    } catch (err) {
+      return { error: String(err.message || err), list: extensionHost.list() }
+    }
+  })
+  ipcMain.handle('ext:install-crx', async () => {
+    if (!extensionHost || !mainWindow) return { canceled: true }
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Install .crx extension',
+      properties: ['openFile'],
+      filters: [{ name: 'Chrome extension', extensions: ['crx'] }]
+    })
+    if (result.canceled || !result.filePaths.length) return { canceled: true }
+    try {
+      const ext = await extensionHost.installFromCrx(result.filePaths[0])
+      broadcastExtensions()
+      return { extension: ext, list: extensionHost.list() }
+    } catch (err) {
+      return { error: String(err.message || err), list: extensionHost.list() }
+    }
+  })
+  ipcMain.handle('ext:set-enabled', async (_e, id, enabled) => {
+    if (!extensionHost) return []
+    await extensionHost.setEnabled(id, enabled)
+    broadcastExtensions()
+    return extensionHost.list()
+  })
+  ipcMain.handle('ext:remove', async (_e, id) => {
+    if (!extensionHost) return []
+    await extensionHost.remove(id)
+    broadcastExtensions()
+    return extensionHost.list()
+  })
+  ipcMain.handle('ext:reveal', (_e, id) => {
+    const ext = extensionHost && extensionHost.list().find((e) => e.id === id)
+    if (ext) shell.showItemInFolder(ext.path)
+  })
+  ipcMain.handle('ext:reload-all', async () => {
+    if (!extensionHost) return []
+    for (const ext of extensionHost.list()) {
+      if (!ext.enabled) continue
+      await extensionHost.setEnabled(ext.id, false).catch(() => {})
+      await extensionHost.setEnabled(ext.id, true).catch(() => {})
+    }
+    broadcastExtensions()
+    return extensionHost.list()
+  })
+
   ipcMain.handle('shell:show-menu', () => {
     if (!mainWindow) return
     Menu.buildFromTemplate([
@@ -162,6 +272,8 @@ function registerIpc () {
       { type: 'separator' },
       { label: 'Reload', accelerator: 'CmdOrCtrl+R', click: () => tabs && tabs.reload() },
       { label: 'Toggle DevTools', accelerator: isMac ? 'Alt+Cmd+I' : 'Ctrl+Shift+I', click: () => { const wc = tabs && tabs.activeWebContents(); if (wc) wc.toggleDevTools() } },
+      { type: 'separator' },
+      { label: 'Extensions', accelerator: 'CmdOrCtrl+Shift+E', click: () => openExtensionsPage() },
       { type: 'separator' },
       isMac ? { role: 'about' } : { role: 'quit' }
     ]).popup({ window: mainWindow })
@@ -179,6 +291,7 @@ function menuContext () {
     nextTab: () => tabs && tabs.cycle(1),
     prevTab: () => tabs && tabs.cycle(-1),
     focusAddressBar: () => sendCommand('focus-address'),
+    openExtensions: () => openExtensionsPage(),
     toggleDevTools: () => {
       const wc = tabs && tabs.activeWebContents()
       if (wc) wc.toggleDevTools()
@@ -197,10 +310,15 @@ if (!app.requestSingleInstanceLock()) {
     }
   })
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     // One persistent session for the whole shell: cookies/logins are shared
     // between tabs exactly like a real browser.
     sharedSession = session.fromPartition('persist:shell')
+
+    // Extensions have to be loaded into the session before the first page,
+    // otherwise content scripts never run.
+    extensionHost = new ExtensionHost({ session: sharedSession, userDataDir: app.getPath('userData') })
+    await extensionHost.loadAll()
 
     registerIpc()
     createWindow()

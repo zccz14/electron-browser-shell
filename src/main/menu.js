@@ -19,6 +19,8 @@ function buildMenu (ctx) {
       { label: 'New Tab', accelerator: 'CmdOrCtrl+T', click: () => ctx.newTab() },
       { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: () => ctx.closeTab() },
       { type: 'separator' },
+      { label: 'Extensions…', accelerator: 'CmdOrCtrl+Shift+E', click: () => ctx.openExtensions() },
+      { type: 'separator' },
       isMac
         ? { role: 'close', label: 'Close Window', accelerator: 'CmdOrCtrl+Shift+W' }
         : { role: 'quit' }

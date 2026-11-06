@@ -5,6 +5,8 @@
 //   npx electron . --smoke --smoke-out=/tmp/browser-shell-smoke
 const path = require('node:path')
 const fs = require('node:fs')
+const { execFileSync } = require('node:child_process')
+const { pathToFileURL } = require('node:url')
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -54,7 +56,7 @@ async function waitForLoad (tabs, id, timeout = 15000) {
   return false
 }
 
-async function runSmoke ({ window, chromeView, tabs }) {
+async function runSmoke ({ window, chromeView, tabs, extensions, openExtensionPopup }) {
   const outDir = argValue('smoke-out', path.join(require('node:os').tmpdir(), 'browser-shell-smoke'))
   fs.mkdirSync(outDir, { recursive: true })
 
@@ -69,6 +71,13 @@ async function runSmoke ({ window, chromeView, tabs }) {
       chromeHeight: chromeView.getBounds().height,
       capture: await capture(chromeView.webContents, path.join(outDir, '01-new-tab.png'))
     })
+
+    // --- extensions: install the bundled sample --------------------------
+    for (const existing of extensions.list()) await extensions.remove(existing.id)
+    const sampleDir = path.join(__dirname, '..', '..', 'examples', 'sample-extension')
+    const sample = await extensions.installFromDirectory(sampleDir, { copy: true })
+    if (!sample || !sample.id) fails.push('sample extension did not load')
+    report.steps.push({ step: 'extension-install', installed: { id: sample.id, name: sample.name, mv: sample.manifestVersion, warnings: sample.warnings } })
 
     // --- multiple tabs -----------------------------------------------------
     const example = tabs.create({ url: 'https://example.com', activate: true })
@@ -85,6 +94,73 @@ async function runSmoke ({ window, chromeView, tabs }) {
       chromeCapture: await capture(chromeView.webContents, path.join(outDir, '02-tabs.png')),
       contentCapture: await capture(tabs.activeWebContents(), path.join(outDir, '03-active-tab.png'))
     })
+
+    // --- the extension actually ran inside the page -----------------------
+    const banner = await tabs.tabs.get(example).view.webContents.executeJavaScript(
+      "(() => { const el = document.getElementById('browser-shell-sample-banner'); return el ? el.textContent : null })()"
+    )
+    if (!banner) fails.push('content script of the sample extension did not run on example.com')
+
+    report.steps.push({ step: 'extension-content-script', banner })
+
+    // --- the extension's popup opens in its own window --------------------
+    let popupStep = { opened: false }
+    try {
+      const popup = openExtensionPopup(sample.id)
+      await wait(1800)
+      if (!popup || popup.isDestroyed()) throw new Error('popup window did not open')
+      const popupText = await popup.webContents.executeJavaScript('document.body.innerText')
+      popupStep = {
+        opened: true,
+        text: String(popupText || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+        capture: await capture(popup.webContents, path.join(outDir, '08-popup.png'))
+      }
+      popup.destroy()
+    } catch (err) {
+      popupStep = { opened: false, error: String(err && err.message ? err.message : err) }
+      fails.push('extension popup did not render: ' + popupStep.error)
+    }
+    report.steps.push({ step: 'extension-popup', ...popupStep })
+
+    // --- .crx install path (Electron cannot load .crx, we unpack it) ------
+    let crxOutcome = 'skipped'
+    try {
+      const zipFile = path.join(outDir, 'sample.zip')
+      execFileSync('zip', ['-qr', zipFile, '.'], { cwd: sampleDir })
+      const zip = fs.readFileSync(zipFile)
+      const header = Buffer.alloc(4)
+      header.writeUInt32LE(0, 0)
+      const u32 = (n) => { const b = Buffer.alloc(4); b.writeUInt32LE(n, 0); return b }
+      const crxFile = path.join(outDir, 'sample.crx')
+      fs.writeFileSync(crxFile, Buffer.concat([Buffer.from('Cr24'), u32(3), u32(header.length), header, zip]))
+      const fromCrx = await extensions.installFromCrx(crxFile)
+      if (!fromCrx || !fromCrx.id) throw new Error('extension did not load from .crx')
+      crxOutcome = 'installed ' + fromCrx.name
+      await extensions.remove(fromCrx.id)
+    } catch (err) {
+      crxOutcome = 'skipped: ' + (err && err.message ? err.message : err)
+    }
+    report.steps.push({ step: 'extension-crx', outcome: crxOutcome })
+
+    // --- the extensions page itself ---------------------------------------
+    const extPageId = tabs.create({
+      url: pathToFileURL(path.join(__dirname, '..', 'renderer', 'extensions.html')).toString(),
+      preload: path.join(__dirname, '..', 'preload', 'extensions.js'),
+      activate: true
+    })
+    await waitForLoad(tabs, extPageId)
+    await wait(1200)
+    const cards = await tabs.tabs.get(extPageId).view.webContents.executeJavaScript(
+      "document.querySelectorAll('.card').length"
+    )
+    if (!cards) fails.push('extensions page rendered no cards')
+    report.steps.push({
+      step: 'extensions-page',
+      cards,
+      capture: await capture(tabs.tabs.get(extPageId).view.webContents, path.join(outDir, '07-extensions.png'))
+    })
+    tabs.close(extPageId)
+    await wait(400)
 
     // --- navigation + history ---------------------------------------------
     tabs.navigate('example.com')

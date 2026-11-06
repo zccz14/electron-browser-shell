@@ -26,6 +26,10 @@ behave the way they do in Chrome.
 | Native context menu (open link in new tab, copy link, back/forward, inspect element) | ✅ |
 | Keyboard shortcuts: `⌘/Ctrl+T`, `⌘/Ctrl+W`, `⌘/Ctrl+L`, `⌘/Ctrl+R`, `⌘/Ctrl+Shift+R`, `⌘/Ctrl+←/→`, `Ctrl+Tab` | ✅ |
 | Session restore: open tabs come back on the next launch | ✅ |
+| Chrome extension host: load unpacked folders and `.crx` files, enable/disable/remove, persisted across launches | ✅ |
+| Extension content scripts, MV2 background pages, `chrome.storage`, runtime messaging, popups | ✅ |
+| Extension toolbar icons + popup window (`chrome-extension://…` in its own window) | ✅ |
+| Extensions manager page (`⌘/Ctrl+Shift+E`) with a per-permission capability report | ✅ |
 | Frameless shell chrome: macOS traffic lights inset, Windows/Linux `titleBarOverlay` | ✅ |
 | Headless smoke test that drives the app and writes screenshots | ✅ |
 
@@ -74,8 +78,10 @@ npm install
 
 ## Smoke test
 
-Runs the real app, opens tabs, navigates, goes back, closes a tab, resizes the
-window, asserts the layout, and writes PNG screenshots — no display required:
+Runs the real app against a throwaway profile, opens tabs, navigates, goes back,
+closes a tab, resizes the window, **installs an extension (unpacked and from a
+`.crx`), asserts its content script really ran in the page and its popup renders**,
+and writes PNG screenshots — no display required:
 
 ```bash
 npx electron . --smoke --smoke-out=/tmp/browser-shell-smoke
@@ -84,12 +90,65 @@ npx electron . --smoke --smoke-out=/tmp/browser-shell-smoke
 Exit code `0` means every assertion passed. Artefacts land in the output dir:
 
 ```
-01-new-tab.png   shell UI, new tab page
-02-tabs.png      three tabs, real titles + favicons
-03-active-tab.png  the active tab's page
-04-after-back.png  after back navigation
-05-resized.png   after window resize
-report.json      full state dumps + failures
+01-new-tab.png      shell UI, new tab page
+02-tabs.png         three tabs, real titles + favicons
+03-active-tab.png   the active tab's page
+04-after-back.png   after back navigation
+05-omnibox.png      after typing in the omnibox
+06-resized.png      after window resize
+07-extensions.png   the extensions manager page
+08-popup.png        an extension popup rendered on chrome-extension://
+report.json         full state dumps + failures
+```
+
+## Chrome extensions
+
+`⌘/Ctrl+Shift+E` opens the extensions page — load an unpacked folder or a `.crx`
+file, toggle extensions, see what each one will and will not get.
+
+![Extensions page](docs/screenshot-extensions.png)
+
+Electron implements **a subset** of the Chrome extension API and says so plainly:
+arbitrary Web Store extensions are out of scope, and `.crx` files are not loadable
+as-is. This shell closes the practical gap where it can:
+
+- **`.crx` install** — the CRX3/CRX2 envelope is stripped, the zip unpacked into
+  the shell's own folder, then loaded. (Chrome itself refuses to unpack for you.)
+- **`.crx` never touches the network** — nothing is fetched from the Web Store;
+  you bring the file, the shell does the rest.
+- **Popups** — Electron does not implement `chrome.action`, so this shell renders
+  the manifest's `default_popup` in a small window on the extension's own
+  `chrome-extension://` origin. `chrome.storage` and background messaging work
+  there, so most popups are usable.
+- **Capability report** — every extension card lists the permissions Electron
+  cannot honour, so "installs but does nothing" is visible up front.
+
+### What actually works (verified by the smoke test)
+
+| Area | Status |
+| --- | --- |
+| Content scripts (`matches`, `run_at`, all frames) | ✅ |
+| MV2 background page / event page | ✅ |
+| `chrome.storage.local` / `.sync` (local disk, no device sync) | ✅ |
+| `chrome.runtime.sendMessage` / `connect` / `onMessage` / `onInstalled` | ✅ |
+| `chrome.tabs.sendMessage`, `reload`, `executeScript` (partial `query`) | ✅ |
+| `chrome.scripting`, `chrome.i18n`, `chrome.management` (partial) | ✅ |
+| DevTools extensions — full API incl. panels | ✅ |
+| `chrome.webRequest` — observational only | ⚠️ |
+| MV3 `background.service_worker` | ❌ loads as an inert page |
+| Blocking `webRequest` / `declarativeNetRequest` | ❌ no real ad blocking |
+| `chrome.action` / `browser_action` (native toolbar popup) | ⚠️ emulated in a window |
+| `chrome.windows`, `bookmarks`, `history`, `downloads`, `cookies`, `notifications`, `alarms` | ❌ |
+| `sidePanel`, `omnibox`, `contextMenus`, `tabGroups` | ❌ |
+| Direct install from the Web Store | ❌ bring a `.crx` or an unpacked folder |
+
+Manifest V2 is the version Electron implements best; Chromium warns that MV2 is
+deprecated, and you will see that warning in the terminal — it is expected.
+
+Try it with the bundled example:
+
+```bash
+# extensions page → Load unpacked → examples/sample-extension
 ```
 
 ## Architecture
@@ -102,13 +161,19 @@ src/
 │   ├── menu.js      app menu (the accelerators are the shell's shortcuts)
 │   ├── urls.js      omnibox input → URL / search
 │   └── smoke.js     self-check + screenshots
+│   ├── extensions.js ExtensionHost — install / enable / uninstall
+│   └── crx.js       .crx (CRX3/CRX2) → unpacked directory
 ├── preload/
-│   └── chrome.js    contextBridge: the only shell ⇄ main surface
-└── renderer/
-    ├── index.html   tab strip + toolbar (this *is* the browser UI)
-    ├── styles.css
-    ├── app.js
-    └── newtab.html  local new tab page (works offline)
+│   ├── chrome.js    contextBridge: the only shell ⇄ main surface
+│   └── extensions.js  bridge for the extensions page
+├── renderer/
+│   ├── index.html   tab strip + toolbar (this *is* the browser UI)
+│   ├── styles.css
+│   ├── app.js
+│   ├── extensions.* the extensions manager page
+│   └── newtab.html  local new tab page (works offline)
+└── examples/
+    └── sample-extension/  MV2 extension used by the smoke test
 ```
 
 Two layers, and that is the whole trick:
@@ -139,7 +204,7 @@ repo's smoke test — PRs welcome.
 a compositor; `WebContentsView` positioning is done by Electron, so it is not
 tied to any toolkit-specific layout.
 
-## Known limits (v0.1)
+## Known limits (v0.2)
 
 - The shell UI is only 88px tall, so autocomplete dropdowns that would overlap
   the page are not implemented yet. The `⋯` button opens a native menu instead.
@@ -147,6 +212,8 @@ tied to any toolkit-specific layout.
   tabs cost ten renderers' worth of memory (roughly 1.5–3 GB in practice).
 - No bookmarks, no history page, no downloads UI, no per-site zoom.
 - Session restore keeps `http(s)` URLs only.
+- Extensions can't be installed from the Web Store in one click, and MV3
+  service-worker backgrounds don't run.
 
 ## License
 

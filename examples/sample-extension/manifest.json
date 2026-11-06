@@ -1,0 +1,27 @@
+{
+  "manifest_version": 2,
+  "name": "Browser Shell Sample",
+  "version": "1.0.0",
+  "description": "Proves content scripts, chrome.storage and runtime messaging work inside Browser Shell.",
+  "permissions": ["storage", "<all_urls>"],
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "scripts": ["background.js"],
+    "persistent": false
+  },
+  "browser_action": {
+    "default_title": "Browser Shell Sample",
+    "default_popup": "popup.html"
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}

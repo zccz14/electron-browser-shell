@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; style-src 'self'; img-src 'self' data:; script-src 'self'" />
+  <title>Extensions</title>
+  <link rel="stylesheet" href="extensions.css" />
+</head>
+<body>
+  <header>
+    <div class="headline">
+      <h1>Extensions</h1>
+      <p class="sub">Electron supports a <em>subset</em> of the Chrome extension API. This page shows what each one gets.</p>
+    </div>
+    <div class="actions">
+      <button id="load-unpacked" class="primary">Load unpacked</button>
+      <button id="install-crx">Install .crx</button>
+      <button id="reload-all">Reload all</button>
+    </div>
+  </header>
+
+  <div id="notice" class="notice hidden"></div>
+
+  <main id="list"></main>
+
+  <footer>
+    <details>
+      <summary>What works, what does not</summary>
+      <div class="columns">
+        <div>
+          <h3>Works</h3>
+          <ul>
+            <li>content scripts (all frames, run_at, matches)</li>
+            <li>MV2 background page, event pages</li>
+            <li>chrome.storage.local / sync (local disk, no sync)</li>
+            <li>chrome.runtime.sendMessage / connect / onMessage</li>
+            <li>chrome.tabs.sendMessage, reload, executeScript (partial query)</li>
+            <li>chrome.scripting, chrome.i18n, chrome.management (partial)</li>
+            <li>DevTools extensions — full API, panels included</li>
+            <li>observational chrome.webRequest</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Does not work</h3>
+          <ul>
+            <li>MV3 service-worker background (loads as an inert page)</li>
+            <li>blocking webRequest / declarativeNetRequest → no real ad blocking</li>
+            <li>chrome.action / browser_action toolbar popups (this shell opens them in a window instead)</li>
+            <li>chrome.windows, bookmarks, history, downloads, cookies, notifications, alarms</li>
+            <li>sidePanel, omnibox, contextMenus, tabGroups</li>
+            <li>installing straight from the Chrome Web Store (use .crx or an unpacked folder)</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+  </footer>
+
+  <script src="extensions.js"></script>
+</body>
+</html>

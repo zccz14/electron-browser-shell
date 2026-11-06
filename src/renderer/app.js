@@ -134,6 +134,27 @@ window.shell.onState((next) => {
   render()
 })
 
+window.shell.onExtensions((list) => {
+  const host = document.getElementById('ext-actions')
+  host.replaceChildren()
+  for (const ext of list) {
+    if (!ext.enabled || !ext.popupPath) continue
+    const btn = document.createElement('button')
+    btn.className = 'iconbtn ext-btn'
+    btn.title = ext.name
+    if (ext.icon) {
+      const img = document.createElement('img')
+      img.src = ext.icon
+      img.alt = ''
+      btn.appendChild(img)
+    } else {
+      btn.textContent = (ext.name || '?').charAt(0).toUpperCase()
+    }
+    btn.addEventListener('click', () => window.shell.openExtensionPopup(ext.id))
+    host.appendChild(btn)
+  }
+})
+
 window.shell.onCommand((name) => {
   if (name === 'focus-address') {
     address.focus()
