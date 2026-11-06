@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>New Tab</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: #202124;
+      color: #e8eaed;
+      font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      display: grid;
+      place-items: center;
+      user-select: none;
+    }
+    .wrap { width: min(720px, 86vw); text-align: center; }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 30px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+    p.sub { margin: 0 0 34px; color: #9aa0a6; font-size: 13px; }
+    .tiles {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+    }
+    a.tile {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      padding: 16px 6px;
+      border-radius: 12px;
+      background: #2a2b2f;
+      color: #e8eaed;
+      text-decoration: none;
+      font-size: 12px;
+      transition: background 0.12s ease, transform 0.12s ease;
+    }
+    a.tile:hover { background: #35363a; transform: translateY(-1px); }
+    .dot {
+      width: 34px; height: 34px; border-radius: 10px;
+      display: grid; place-items: center;
+      font-weight: 700; font-size: 15px; color: #fff;
+    }
+    .hint { margin-top: 34px; color: #6b6f76; font-size: 12px; }
+    kbd {
+      font: inherit; padding: 1px 5px; border-radius: 4px;
+      background: #2f3034; border: 1px solid #3c3d42; font-size: 11px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Browser Shell</h1>
+    <p class="sub">Electron + BaseWindow + WebContentsView — every tab is a real browser tab.</p>
+
+    <div class="tiles">
+      <a class="tile" href="https://github.com/"><span class="dot" style="background:#24292f">G</span>GitHub</a>
+      <a class="tile" href="https://duckduckgo.com/"><span class="dot" style="background:#de5833">D</span>DuckDuckGo</a>
+      <a class="tile" href="https://news.ycombinator.com/"><span class="dot" style="background:#ff6600">Y</span>Hacker News</a>
+      <a class="tile" href="https://developer.mozilla.org/"><span class="dot" style="background:#1b1b1d">M</span>MDN</a>
+      <a class="tile" href="https://www.wikipedia.org/"><span class="dot" style="background:#54595d">W</span>Wikipedia</a>
+      <a class="tile" href="https://www.youtube.com/"><span class="dot" style="background:#c00">▶</span>YouTube</a>
+      <a class="tile" href="https://www.electronjs.org/docs/latest"><span class="dot" style="background:#2f3241">E</span>Electron</a>
+      <a class="tile" href="https://www.google.com/"><span class="dot" style="background:#4285f4">G</span>Google</a>
+    </div>
+
+    <p class="hint">
+      <kbd>⌘/Ctrl</kbd> + <kbd>T</kbd> new tab ·
+      <kbd>⌘/Ctrl</kbd> + <kbd>W</kbd> close tab ·
+      <kbd>⌘/Ctrl</kbd> + <kbd>L</kbd> address bar
+    </p>
+  </div>
+</body>
+</html>

@@ -1,0 +1,25 @@
+{
+  "name": "electron-browser-shell",
+  "productName": "Browser Shell",
+  "version": "0.1.0",
+  "private": false,
+  "description": "A Chrome-like browser shell built with Electron: BaseWindow + WebContentsView, real browser tabs, address bar, cross-platform.",
+  "main": "src/main/index.js",
+  "license": "MIT",
+  "author": "zccz14",
+  "keywords": [
+    "electron",
+    "browser",
+    "webcontentsview",
+    "browser-shell",
+    "tabs"
+  ],
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "smoke": "electron . --smoke --smoke-out=./.smoke"
+  },
+  "devDependencies": {
+    "electron": "^45.2.3"
+  }
+}

@@ -1,0 +1,200 @@
+:root {
+  --bg: #202124;
+  --chrome: #35363a;
+  --tab-hover: #2c2d31;
+  --text: #e8eaed;
+  --text-dim: #9aa0a6;
+  --focus: #8ab4f8;
+  --danger: #f28b82;
+  --titlebar-h: 42px;
+  --toolbar-h: 46px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font: 12px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  user-select: none;
+  cursor: default;
+}
+
+/* ------------------------------------------------------------- title bar */
+.titlebar {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: var(--titlebar-h);
+  padding: 0 8px 0 0;
+  background: var(--bg);
+  -webkit-app-region: drag;
+}
+
+body.is-mac .titlebar { padding-left: 84px; }
+body.is-win .titlebar { padding-right: 148px; }
+
+.tabstrip {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  min-width: 92px;
+  max-width: 240px;
+  flex: 1 1 200px;
+  padding: 0 8px 0 10px;
+  border-radius: 9px 9px 0 0;
+  color: var(--text-dim);
+  -webkit-app-region: no-drag;
+}
+
+.tab:hover { background: var(--tab-hover); color: var(--text); }
+.tab.active { background: var(--chrome); color: var(--text); }
+
+/* hairline between neighbouring inactive tabs, like Chrome */
+.tab + .tab::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 9px;
+  bottom: 9px;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.09);
+}
+.tab:hover::before,
+.tab.active::before,
+.tab:hover + .tab::before,
+.tab.active + .tab::before { opacity: 0; }
+
+.tab-favicon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  overflow: hidden;
+  font-size: 10px;
+  font-weight: 600;
+  background: #4a4b50;
+  color: #d5d7da;
+}
+
+.tab-favicon img { width: 16px; height: 16px; object-fit: contain; }
+.tab.loading .tab-favicon img { opacity: 0; }
+.tab.loading .tab-favicon::after {
+  content: "";
+  width: 11px;
+  height: 11px;
+  border: 1.6px solid var(--text-dim);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.tab-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-close {
+  flex: none;
+  width: 17px;
+  height: 17px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  padding: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  opacity: 0;
+  cursor: default;
+  -webkit-app-region: no-drag;
+}
+.tab:hover .tab-close, .tab.active .tab-close { opacity: 0.75; }
+.tab-close:hover { background: rgba(255, 255, 255, 0.14); opacity: 1 !important; }
+
+/* --------------------------------------------------------------- toolbar */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--toolbar-h);
+  padding: 0 8px;
+  background: var(--chrome);
+  border-radius: 0;
+}
+
+.navgroup { display: flex; align-items: center; gap: 2px; }
+.navgroup.right { margin-left: auto; }
+
+.iconbtn {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 50%;
+  padding: 0;
+  background: transparent;
+  color: var(--text);
+  -webkit-app-region: no-drag;
+}
+.iconbtn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); }
+.iconbtn:disabled { color: #5f6368; }
+.newtab { flex: none; width: 28px; height: 28px; margin-bottom: 3px; border-radius: 8px; }
+
+#reload .ico-stop { display: none; }
+#reload.loading .ico-reload { display: none; }
+#reload.loading .ico-stop { display: block; }
+
+/* -------------------------------------------------------------- omnibox */
+.omnibox {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 80px;
+  height: 32px;
+  margin: 0 6px;
+  padding: 0 12px 0 11px;
+  gap: 8px;
+  border-radius: 16px;
+  background: var(--bg);
+  border: 1px solid #5f6368;
+  color: var(--text-dim);
+}
+.omnibox:focus-within { border-color: var(--focus); background: #292a2d; }
+
+.omnibox-icon { display: grid; place-items: center; color: var(--text-dim); }
+
+#address {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  user-select: text;
+  cursor: text;
+}
+#address::placeholder { color: var(--text-dim); }
